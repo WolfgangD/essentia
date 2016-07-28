@@ -101,6 +101,7 @@ BpmHistogram::~BpmHistogram() {
 }
 
 void BpmHistogram::configure() {
+   cout << "Running Wolfgang's custom version of essentia" << endl;
   _frameRate = parameter("frameRate").toReal();
   _frameSize = int(parameter("frameSize").toReal()*_frameRate);
   _frameSize = nextPowerTwo(int(ceil(Real(_frameSize))));
@@ -148,6 +149,32 @@ void BpmHistogram::createWindow(int size) {
   delete windowing;
   essentia::normalize(_window);
 }
+  
+Real interpolate(Real x, Real xc, Real yl, Real yc, Real yu, Real* xe, Real* ye) {
+  Real d1,d2;
+  d2 = yu-yc+yl-yc;
+  d1 = (Real)0.5*(yu-yl);
+  
+  Real dx = x-xc;
+  return yc + dx*(d1+0.5*d2*dx);
+//  
+//  if (d2) {
+//    *xe = xc - d1/d2;
+//    *ye = yc + (Real)0.5*d1*(*xe-xc);
+//  } else {
+//    *xe = xc;
+//    *ye = yc;
+//    return 0.0;
+//  }
+//  if (fabs(xc-*xe)>1)
+//  {
+//    return 0.0;
+//  }
+//  else
+//  {
+//    return d2;
+//  }
+}
 
 void BpmHistogram::computeBpm() {
   const vector<vector<Real> >& magnitudes = _pool.value<vector<vector<Real> > >("magnitudes");
@@ -157,50 +184,87 @@ void BpmHistogram::computeBpm() {
   Real bpmRatio = _binWidth*60.0;
   Real threshold = 0.;
   
-  for (int i=0; i<(int)peaks.size();i++) {
-    vector<Real> tempogram(int(_maxBpm+1), 0.);
-    try {
-      // only use peaks that are VERY prominent
-      //threshold = max(Real(1e-4), max(median(peaksValue), mean(peaksValue)));
+  _pool.remove("peaks_positions");
+  
+  for (int i=0; i<(int)magnitudes.size();i++) {
+    vector<Real> tempogram(int(_maxBpm+1), 0);
+    vector<Real> peaks_positions(tempogram.size(), 0);
+    
+    for (int j=0; j<tempogram.size(); j++) {
+      _pool.add("bpmCandidates", j);
+      
+      int bpmBin = int(round(j / bpmRatio));
+      if (bpmBin < 1 || bpmBin >= magnitudes[i].size() -1) {
+        continue;
+      }
+      
+      Real bin = 0;
+      Real mag = 0;
+      cout << j / bpmRatio << ",";
+      mag = interpolate(j / bpmRatio, bpmBin, magnitudes[i][bpmBin-1], magnitudes[i][bpmBin], magnitudes[i][bpmBin+1], &bin, &bin);
+      
+      _pool.add("bpmAmplitudes", mag);
+      
+      tempogram[j] = mag;
+      peaks_positions[j] = j;
+//      cout << peaks_positions[j] << ",";
 
-      // be permissive
-      threshold = min(Real(1e-6), min(median(magnitudes[i]), mean(magnitudes[i]))); 
-
-      //threshold = max(Real(1e-4), min(median(peaksValue), mean(peaksValue)));
+//      cout << "(" << bin << "," << mag << "),";
     }
-    catch(const EssentiaException& ) { // no peaks found
-      threshold = numeric_limits<int>::max();
-    }
-
-    vector<Real> mainPeaks, mainBpms;
-    mainPeaks.reserve(peaks[i].size());
-    mainBpms.reserve(peaks[i].size());
-
-    for (int j=0; j<(int)peaks[i].size(); j++) {
-      if (peaksValue[i][j] < threshold) continue;
-
-      Real bpm = round(peaks[i][j]*bpmRatio);
-      // double check that we do not get a BPM value outside of the configured range
-      if (bpm > _maxBpm || bpm < _minBpm) continue;
-
-      mainPeaks.push_back(peaks[i][j]);
-      mainBpms.push_back(bpm);
-      _pool.add("bpmCandidates", bpm);
-      _pool.add("bpmAmplitudes", peaksValue[i][j]);
-      tempogram[int(bpm)] = peaksValue[i][j];
-    }
-
-    // Check for silent frame or DC offset or possible constant input. Normally more than one peak should be found
-    if (mainPeaks.size() < 1) {
-      mainPeaks.clear();
-      mainBpms.clear();
-      _pool.add("magnitudes", vector<Real>(magnitudes[i].size(), 0));
-      _pool.add("bpmCandidates", 0);
-      _pool.add("bpmAmplitudes", 0);
-    }
-
+    cout << endl;
+    
+    _pool.add("peaks_positions", peaks_positions);
     _pool.add("tempogram", tempogram);
   }
+  
+//  for (int i=0; i<(int)peaks.size();i++) {
+//    vector<Real> tempogram(int(_maxBpm+1), 0.);
+//    try {
+//      // only use peaks that are VERY prominent
+//      //threshold = max(Real(1e-4), max(median(peaksValue), mean(peaksValue)));
+//
+//      // be permissive
+//      threshold = min(Real(1e-6), min(median(magnitudes[i]), mean(magnitudes[i]))); 
+//
+//      //threshold = max(Real(1e-4), min(median(peaksValue), mean(peaksValue)));
+//    }
+//    catch(const EssentiaException& ) { // no peaks found
+//      threshold = numeric_limits<int>::max();
+//    }
+//    
+//    threshold = 0;
+//
+//    vector<Real> mainPeaks, mainBpms;
+//    mainPeaks.reserve(peaks[i].size());
+//    mainBpms.reserve(peaks[i].size());
+//
+//    for (int j=0; j<(int)peaks[i].size(); j++) {
+//      cout << peaks[i][j] << ",";
+//      if (peaksValue[i][j] < threshold) continue;
+//
+//      Real bpm = round(peaks[i][j]*bpmRatio);
+//      // double check that we do not get a BPM value outside of the configured range
+//      if (bpm > _maxBpm || bpm < _minBpm) continue;
+//
+//      mainPeaks.push_back(peaks[i][j]);
+//      mainBpms.push_back(bpm);
+//      _pool.add("bpmCandidates", bpm);
+//      _pool.add("bpmAmplitudes", peaksValue[i][j]);
+//      tempogram[int(bpm)] = peaksValue[i][j];
+//    }
+//
+//    // Check for silent frame or DC offset or possible constant input. Normally more than one peak should be found
+//    if (mainPeaks.size() < 1) {
+//      mainPeaks.clear();
+//      mainBpms.clear();
+//      _pool.add("magnitudes", vector<Real>(magnitudes[i].size(), 0));
+//      _pool.add("bpmCandidates", 0);
+//      _pool.add("bpmAmplitudes", 0);
+//    }
+//    cout << endl;
+//
+//    _pool.add("tempogram", tempogram);
+//  }
 
 }
 
